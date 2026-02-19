@@ -23,23 +23,21 @@ th { background:#0f172a; }
 
 <h2>📊 ملخص الشموع + Pivot (آخر 72 ساعة)</h2>
 <input id="symbol" placeholder="مثال: SOL" />
-<button onclick="analyze()">تحليل</button>
+<button onclick="manualAnalyze()">تحليل عملة واحدة</button>
 
 <div id="livePriceTop" class="price-top blue"></div>
 <div id="result" class="box"></div>
 
 <script>
-
-const WORKER_URL = "https://sami.alywm100.workers.dev/";
-
+// ==== إعدادات البوت و Worker ====
+const WORKER_URL = "https://sami.alywm100.workers.dev/"; // رابط Worker
 const TELEGRAM_BOT_TOKEN = "8443614197:AAFF5awBt6UX3ZAcxsosWuDkVUUq8GOmuRg";
 const TELEGRAM_CHAT_ID = "6814152338";
 
 let sentAlerts = {};
 let priceInterval = null;
-let currentSymbol = "";
 
-// ===== إرسال إشعار تلجرام =====
+// ==== إرسال إشعار تلجرام ====
 async function sendTelegram(message) {
   try {
     await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
@@ -50,73 +48,110 @@ async function sendTelegram(message) {
         text: message
       })
     });
-  } catch(e){}
+  } catch(e){ console.log("Telegram error:", e) }
 }
 
-// ===== البحث التلقائي عن كل عملات USDT =====
-async function scanAllCoins() {
-  try {
-    const exchange = await fetch(`${WORKER_URL}?url=https://api.binance.com/api/v3/exchangeInfo`);
-    const data = await exchange.json();
-
-    const symbols = data.symbols
-      .filter(s => s.quoteAsset === "USDT" && s.status === "TRADING")
-      .map(s => s.symbol);
-
-    for (let symbol of symbols) {
-      checkBreakout(symbol);
-    }
-  } catch(e){}
-}
-
-// ===== فحص الاختراق في الساعة الحالية =====
+// ==== فحص اختراق عملة واحدة ====
 async function checkBreakout(symbol) {
   try {
     const kRes = await fetch(`${WORKER_URL}?url=https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1h&limit=6`);
     const klines = await kRes.json();
-    const current = klines[klines.length - 1];
-
-    const open = +current[1];
-    const close = +current[4];
+    const current = klines[klines.length-1];
+    const open = +current[1], close = +current[4];
 
     const dRes = await fetch(`${WORKER_URL}?url=https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1d&limit=2`);
     const daily = await dRes.json();
+    const dHigh = +daily[0][2], dLow = +daily[0][3], dClose = +daily[0][4];
 
-    const dHigh = +daily[0][2];
-    const dLow = +daily[0][3];
-    const dClose = +daily[0][4];
-
-    const P = (dHigh + dLow + dClose) / 3;
-    const R1 = (2 * P) - dLow;
-    const S1 = (2 * P) - dHigh;
+    const P = (dHigh + dLow + dClose)/3;
+    const R1 = 2*P - dLow;
     const R2 = P + (dHigh - dLow);
+    const R3 = dHigh + 2*(P - dLow);
+    const S1 = 2*P - dHigh;
     const S2 = P - (dHigh - dLow);
-    const R3 = dHigh + 2 * (P - dLow);
-    const S3 = dLow - 2 * (dHigh - P);
+    const S3 = dLow - 2*(dHigh - P);
 
     let breakout = "";
+    if(open <= R1 && close > R1) breakout="اختراق R1";
+    else if(open <= R2 && close > R2) breakout="اختراق R2";
+    else if(open <= R3 && close > R3) breakout="اختراق R3";
+    else if(open >= S1 && close < S1) breakout="كسر S1";
+    else if(open >= S2 && close < S2) breakout="كسر S2";
+    else if(open >= S3 && close < S3) breakout="كسر S3";
 
-    if (open <= R1 && close > R1) breakout = "اختراق R1";
-    else if (open <= R2 && close > R2) breakout = "اختراق R2";
-    else if (open <= R3 && close > R3) breakout = "اختراق R3";
-    else if (open >= S1 && close < S1) breakout = "كسر S1";
-    else if (open >= S2 && close < S2) breakout = "كسر S2";
-    else if (open >= S3 && close < S3) breakout = "كسر S3";
-
-    if (breakout && !sentAlerts[symbol]) {
+    if(breakout && !sentAlerts[symbol]) {
       sentAlerts[symbol] = true;
-
-      await sendTelegram(
-        `🚨 ${symbol}\n${breakout}\nالسعر: ${close}`
-      );
+      await sendTelegram(`🚨 ${symbol}\n${breakout}\nالسعر: ${close}`);
     }
 
+    return {symbol, open, close, breakout, R1,R2,R3,S1,S2,S3,P};
+  } catch(e){ console.log(symbol, e); return null; }
+}
+
+// ==== فحص جميع العملات USDT ====
+async function scanAllCoins() {
+  try {
+    const res = await fetch(`${WORKER_URL}?url=https://api.binance.com/api/v3/exchangeInfo`);
+    const data = await res.json();
+    const symbols = data.symbols.filter(s => s.quoteAsset==="USDT" && s.status==="TRADING").map(s=>s.symbol);
+
+    const results = [];
+    for(let s of symbols) results.push(await checkBreakout(s));
+
+    renderResults(results.filter(r=>r));
+  } catch(e){ console.log(e); }
+}
+
+// ==== عرض النتائج على الصفحة ====
+function renderResults(results) {
+  let html = `<table>
+    <tr>
+      <th>العملة</th>
+      <th>فتح</th>
+      <th>إغلاق</th>
+      <th>اختراق/كسر</th>
+      <th>P</th><th>R1</th><th>R2</th><th>R3</th><th>S1</th><th>S2</th><th>S3</th>
+    </tr>`;
+  results.forEach(r=>{
+    html += `<tr>
+      <td>${r.symbol}</td>
+      <td>${r.open}</td>
+      <td>${r.close}</td>
+      <td class="${r.breakout?"red":"yellow"}">${r.breakout||"---"}</td>
+      <td>${r.P.toFixed(4)}</td>
+      <td>${r.R1.toFixed(4)}</td>
+      <td>${r.R2.toFixed(4)}</td>
+      <td>${r.R3.toFixed(4)}</td>
+      <td>${r.S1.toFixed(4)}</td>
+      <td>${r.S2.toFixed(4)}</td>
+      <td>${r.S3.toFixed(4)}</td>
+    </tr>`;
+  });
+  html += `</table>`;
+  document.getElementById("result").innerHTML = html;
+}
+
+// ==== تحليل عملة واحدة يدوياً ====
+async function manualAnalyze() {
+  const coin = document.getElementById("symbol").value.toUpperCase();
+  if(!coin) return alert("ادخل رمز العملة");
+  const r = await checkBreakout(coin);
+  if(r) renderResults([r]);
+}
+
+// ==== تحديث السعر الحالي لأخر عملة مراقبة ====
+async function updatePrice() {
+  try {
+    if(!currentSymbol) return;
+    const res = await fetch(`${WORKER_URL}?url=https://api.binance.com/api/v3/ticker/price?symbol=${currentSymbol}`);
+    const data = await res.json();
+    document.getElementById("livePriceTop").innerHTML = "💰 السعر الحالي: " + parseFloat(data.price).toFixed(6);
   } catch(e){}
 }
 
-// ===== تشغيل الفحص كل 30 ثانية =====
+// ==== تشغيل المراقبة التلقائية كل 30 ثانية ====
+scanAllCoins();
 setInterval(scanAllCoins, 30000);
-
 </script>
 
 </body>
