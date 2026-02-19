@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+<meta charset="UTF-8">
+<title>ملخص الشموع + Pivot (آخر 72 ساعة)</title>
+<style>
+body { background:#0f172a; color:white; font-family:Arial; padding:20px; }
+input, button { padding:10px; font-size:16px; margin-right:5px; }
+.box { background:#1e293b; padding:15px; margin-top:20px; border-radius:8px; overflow-x:auto; }
+.green {color:#22c55e;}
+.red {color:#ef4444;}
+.yellow {color:#facc15;}
+.blue {color:#38bdf8;}
+.price-top{ font-size:20px; margin-top:10px; }
+.decision { margin-top:15px; padding:12px; border-radius:8px; background:#020617; border:1px solid #334155; }
+table { width:100%; margin-top:10px; border-collapse:collapse; font-size:14px; }
+td, th { border:1px solid #334155; padding:6px; text-align:center; }
+th { background:#0f172a; }
+.current-row { background:#0b1220; }
+</style>
+</head>
+<body>
+
+<h2>📊 ملخص الشموع + Pivot (آخر 72 ساعة)</h2>
+<input id="symbol" placeholder="مثال: SOL" />
+<button onclick="analyze()">تحليل</button>
+
+<div id="livePriceTop" class="price-top blue"></div>
+<div id="result" class="box"></div>
+
+<script>
+
+const WORKER_URL = "https://sami.alywm100.workers.dev/";
+
+const TELEGRAM_BOT_TOKEN = "8443614197:AAFF5awBt6UX3ZAcxsosWuDkVUUq8GOmuRg";
+const TELEGRAM_CHAT_ID = "6814152338";
+
+let sentAlerts = {};
+let priceInterval = null;
+let currentSymbol = "";
+
+// ===== إرسال إشعار تلجرام =====
+async function sendTelegram(message) {
+  try {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        text: message
+      })
+    });
+  } catch(e){}
+}
+
+// ===== البحث التلقائي عن كل عملات USDT =====
+async function scanAllCoins() {
+  try {
+    const exchange = await fetch(`${WORKER_URL}?url=https://api.binance.com/api/v3/exchangeInfo`);
+    const data = await exchange.json();
+
+    const symbols = data.symbols
+      .filter(s => s.quoteAsset === "USDT" && s.status === "TRADING")
+      .map(s => s.symbol);
+
+    for (let symbol of symbols) {
+      checkBreakout(symbol);
+    }
+  } catch(e){}
+}
+
+// ===== فحص الاختراق في الساعة الحالية =====
+async function checkBreakout(symbol) {
+  try {
+    const kRes = await fetch(`${WORKER_URL}?url=https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1h&limit=6`);
+    const klines = await kRes.json();
+    const current = klines[klines.length - 1];
+
+    const open = +current[1];
+    const close = +current[4];
+
+    const dRes = await fetch(`${WORKER_URL}?url=https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1d&limit=2`);
+    const daily = await dRes.json();
+
+    const dHigh = +daily[0][2];
+    const dLow = +daily[0][3];
+    const dClose = +daily[0][4];
+
+    const P = (dHigh + dLow + dClose) / 3;
+    const R1 = (2 * P) - dLow;
+    const S1 = (2 * P) - dHigh;
+    const R2 = P + (dHigh - dLow);
+    const S2 = P - (dHigh - dLow);
+    const R3 = dHigh + 2 * (P - dLow);
+    const S3 = dLow - 2 * (dHigh - P);
+
+    let breakout = "";
+
+    if (open <= R1 && close > R1) breakout = "اختراق R1";
+    else if (open <= R2 && close > R2) breakout = "اختراق R2";
+    else if (open <= R3 && close > R3) breakout = "اختراق R3";
+    else if (open >= S1 && close < S1) breakout = "كسر S1";
+    else if (open >= S2 && close < S2) breakout = "كسر S2";
+    else if (open >= S3 && close < S3) breakout = "كسر S3";
+
+    if (breakout && !sentAlerts[symbol]) {
+      sentAlerts[symbol] = true;
+
+      await sendTelegram(
+        `🚨 ${symbol}\n${breakout}\nالسعر: ${close}`
+      );
+    }
+
+  } catch(e){}
+}
+
+// ===== تشغيل الفحص كل 30 ثانية =====
+setInterval(scanAllCoins, 30000);
+
+</script>
+
+</body>
+</html>
